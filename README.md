@@ -1,1 +1,1 @@
-
+The data in this repository were generated for the Data Visualization & Dashboarding with R Specialization certification final project. This course is presented by Johns Hopkins University and offered through Coursera. 
