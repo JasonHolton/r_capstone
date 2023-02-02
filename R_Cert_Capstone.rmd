@@ -1,0 +1,420 @@
+---
+title: "R Certification Capstone"
+name: Jason Holton
+output:
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    vertical_layout: fill
+runtime: shiny
+resource_files:
+- tl_2012_us_state.dbf
+- tl_2012_us_state.prj
+- tl_2012_us_state.shp.xml
+- tl_2012_us_state.shx
+---
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+library(tidyverse)
+library(dplyr)
+library(janitor)
+library(plotly)
+library(shiny)
+library(shinyWidgets)
+library(ggthemes)
+library(albersusa)
+library(maps)
+library(ggtext)
+library(sf)
+library(viridis)
+library(stringr)
+library(ggplot2)
+library(hrbrthemes)
+library(extrafont)
+library(fontawesome)
+
+# Load the raw dataset 
+dat <- read.csv("Nutrition__Physical_Activity__and_Obesity_-_Behavioral_Risk_Factor_Surveillance_System.csv")
+
+# Remove empty columns
+dat <- remove_empty(dat, "cols")
+
+# Remove rows where data aren't available due to insufficient sample size
+exclude <- c('~', 'Data not available because sample size is insufficient.')
+dat <- dat[!grepl(paste(exclude, collapse="|"), dat$Data_Value_Footnote),]
+
+# Remove unecessary columns:
+## Data_Value_Type:  every cell contains the string "Value" and has no significant meaning/purpose for this analysis
+## Data_Value_Alt:  this column duplicates the Data_Value column, the reason for which is unknown
+## Data_Value_Footnote_Symbol:  contains a "~" to designate a footnote in the proceeding cell
+## Data_Value_Footnote:  declares that data are not available for that row due to sample size insufficiency
+## Total: Specifies the total sample size based on gender. Rows containing "Total" in the Stratification1 column will be filtered out as well
+## Education, Gender, Income:  These values are repeated in the Stratification1 column which will make filtering easier
+## DataValueTypeID:  every cell contains the string "VALUE" and has no significant meaning/purpose for this analysis
+dat <- dat %>% select(-c(Data_Value_Type, Data_Value_Alt, Data_Value_Footnote_Symbol, Data_Value_Footnote, Total, Education, Gender, Income, DataValueTypeID,))
+
+# Convert table to tibble
+dat <- tibble(dat)
+
+```
+
+
+Page 1
+======
+
+### Chart A
+
+
+```{r}
+# Select the necessary columns
+fig1 <-dat %>% select(YearStart, LocationAbbr, Data_Value, StratificationID1, Question)
+
+# Filter by US location only, graduated high school and identify as being obese
+fig1 <- fig1 %>% filter(LocationAbbr=="US" & StratificationID1=="EDUHSGRAD" & Question=="Percent of adults aged 18 years and older who have obesity")
+
+# Create a tibble with only the necessary data:  year and % obese
+fig1 <- fig1 %>% select(YearStart, Data_Value) %>% arrange(YearStart)
+
+# Plot the data
+ggplotly(ggplot(fig1, aes(x=YearStart, y=Data_Value)) 
+  + geom_line()
+  + theme_tufte()
+  + labs(x = "Year", y = "% Obese", title = "% US Respondents 18 and Older with a High School Education Identified as Obese, 2011 - 2021"))
+  
+```
+
+
+Page 2
+===========================
+
+
+### Chart B
+
+```{r}
+
+# Select the necessary columns
+fig2 <-dat %>% 
+  select(LocationDesc, Data_Value, Stratification1, Question)
+
+# Filter out national data, confine results to male and female only
+fig2_male <- fig2 %>% 
+  filter(LocationDesc!="National" & Stratification1 == "Male")
+
+fig2_female <- fig2 %>% 
+  filter(LocationDesc!="National" & Stratification1 == "Female")
+
+# Produce results only corresponding to the question "Percent of adults who engage in no leisure-time physical activity"
+fig2_male <- filter(fig2_male, grepl("leisure-time", Question))
+
+fig2_female <- filter(fig2_female, grepl("leisure-time", Question))
+
+# Group by location and gender in order to produce the median data
+fig2_male <- fig2_male %>% 
+  group_by(LocationDesc, Stratification1) %>% 
+  summarise(median = median(Data_Value))
+
+fig2_female <- fig2_female %>% 
+  group_by(LocationDesc, Stratification1) %>% 
+  summarise(median = median(Data_Value))
+
+# Join the two tables on LocationDesc
+fig2_joined <- left_join(fig2_female, fig2_male, by="LocationDesc")
+
+# Rename the median.x and median.y columns to female and male, respectively
+fig2_joined <- rename(fig2_joined, female = median.x, male = median.y)
+
+# Plot the data
+ggplotly(ggplot(fig2_joined) 
+  + geom_segment( aes(x=LocationDesc, xend=LocationDesc, y=female, yend=male), color="grey") 
+  + geom_point( aes(x=LocationDesc, y=female, color="female")) 
+  + geom_point( aes(x=LocationDesc, y=male, color="male")) 
+  + labs(y = "Median %", x = "State/Territory", colour = "Gender", title = "Median % of Respondents over Age 18 Claiming no Leisurely Physical Activity, 2011 - 2021")
+  + theme_bw()
+  + coord_flip())
+
+```
+
+
+
+Page 3
+======
+
+Input{.sidebar}
+----------------------------------------------------------------
+### User Input
+
+```{r}
+# Select the necessary columns
+fig3 <-dat %>% 
+  select(YearStart, LocationAbbr, Data_Value, Stratification1, StratificationCategoryId1, Question)
+
+# Filter to remove US/National data and choose income data and remove cells with data not reported
+fig3 <- fig3 %>% 
+  filter(LocationAbbr!="US" & StratificationCategoryId1 == "INC" & Stratification1 != "Data not reported")
+
+# Filter to choose the percent of adults aged 18 years and older who have an overweight classification
+fig3 <- filter(fig3, grepl("vegetables", Question))
+
+# Remove any rows with blank cells
+fig3 <- drop_na(fig3)
+
+# Group by state and income level then summarize by median data_value
+fig3 <- fig3 %>% 
+  group_by(LocationAbbr, Stratification1) %>% 
+  summarise(median = median(Data_Value))
+
+# Load the states shapefile (has been modified using QGIS to remove some of the Alaskan islands, Guam, American Samoa and the US Virgin Islands in order to condense the size of the map. Alaska, Hawaii and Puerto Rico have also been scaled in order to make color differences more apparent)
+states <- read_sf("tl_2012_us_state.shp")
+
+# Change the LocationAbbr column name in fig3 to STUSPS in order to join fig3 with the states file
+fig3 <- rename(fig3, STUSPS = LocationAbbr)
+
+# Join the two tables
+fig3 <- left_join(states, fig3 ,by="STUSPS")
+
+# Change the "Less than $15,000" income level to "$0 to $15,000" so the Shiny input slider will display income levels in order
+fig3 <- rename(fig3, Income = Stratification1)
+fig3 <- fig3 %>% 
+  mutate(Income = replace(Income, Income == "Less than $15,000", "$0 to $15,000"))
+
+sliderTextInput(inputId="income_input", label="Income Level", choices=sort(unique(fig3$Income)))
+
+```
+
+Column
+-------
+
+### Chart C
+
+```{r}
+
+renderPlot({
+    
+    fig3_income <- fig3[fig3$Income == input$income_input, ]
+    
+    ggplot(fig3_income) +
+      geom_sf(aes(fill = median)) +
+      scale_fill_viridis_c(option = "turbo", name = "Median %") +
+      labs(title = "Median % of Respondents by Income Level who Eat Vegetables Once or Less Daily, 2011-2021") +
+      theme(plot.title=element_text(size=20))
+  })
+
+```
+
+Page 4
+===========================
+
+
+### Chart D
+
+```{r}
+library(tidyverse)
+library(sf)
+
+# Select the necessary columns
+fig4 <-dat %>% 
+  select(LocationAbbr, Sample_Size)
+
+# Filter to remove US/National and territorial data (excluding Puerto Rico)
+fig4 <- fig4 %>% 
+  filter(LocationAbbr!="US" & LocationAbbr!="GU" & LocationAbbr!="VI")
+
+# Remove empty cells
+fig4 <- fig4 %>% 
+  drop_na()
+
+# Group by state and income level then summarize by median sample size
+fig4 <- fig4 %>% 
+  group_by(LocationAbbr) %>% 
+  summarise(median = median(Sample_Size))
+
+# Load the states shapefile (has been modified using QGIS to remove some of the Alaskan islands, Guam, American Samoa and the US Virgin Islands in order to condense the size of the map. Alaska, Hawaii and Puerto Rico have also been scaled in order to make color differences more apparent)
+states <- read_sf("tl_2012_us_state.shp")
+
+# Change the LocationAbbr column name in fig3 to STUSPS in order to join fig3 with the states file
+fig4 <- rename(fig4, STUSPS = LocationAbbr)
+
+# Join the two tables
+fig4 <- left_join(states, fig4 ,by="STUSPS")
+
+# Plot the chloropleth
+ggplot(fig4) +  
+  geom_sf(aes(fill = median)) +
+  scale_fill_viridis_c(option = "turbo") +
+  labs(title = "Median Number of Survey Responses per State, 2011-2021") +
+  labs(fill = "Median of Responses")
+
+```
+
+Page 5
+===========================
+
+
+### Chart E
+
+```{r}
+library(ggthemes)
+library(viridis)
+library(ggplot2)
+library(hrbrthemes)
+
+# Select the necessary columns
+fig5 <-dat %>% 
+  select(YearStart, Sample_Size, StratificationCategoryId1, Stratification1)
+
+# Filter just for race/ethnicity
+fig5 <- fig5 %>% 
+  filter(StratificationCategoryId1 == "RACE")
+
+# Remove empty cells
+fig5 <- fig5 %>% 
+  drop_na()
+
+# Group by year and race/ethnicity then summarize by median sample size
+fig5 <- fig5 %>% 
+  group_by(YearStart, Stratification1) %>% 
+  summarise(sum = sum(Sample_Size)) %>% 
+  mutate(percentage = (sum / sum(sum)*100))
+
+# Plot the data as a stacked area chart
+ggplot(fig5, aes(x=YearStart, y=percentage, fill=Stratification1)) +
+  geom_area(alpha=0.6, size=.7, colour="white") +
+  scale_fill_viridis(discrete = T, name = "Race/Ethnicity") +
+  labs(x="Year", y="% Race/Ethnicity", title="Percentage of Survey Responses by Race/Ethnicity") +
+  theme(plot.title=element_text(size=12))
+
+
+```
+
+Page 6
+===========================
+
+
+### Chart F
+
+```{r}
+
+dat_fig6 <- read.csv("Nutrition__Physical_Activity__and_Obesity_-_Behavioral_Risk_Factor_Surveillance_System_modified.csv")
+
+# Select the necessary columns
+fig6 <-dat_fig6 %>% 
+  select(YearStart, LocationDesc, Data_Value, Question)
+
+# Filter out national data
+fig6 <- fig6 %>% 
+  filter(LocationDesc!="National")
+
+# Recode questions to something shorter using stringr
+new_questions <- c("Percent of adults aged 18 years and older who have obesity" = "Percent Obese", 
+                   "Percent of adults aged 18 years and older who have an overweight classification" = "Percent Overweight",
+                   "Percent of adults who achieve at least 150 minutes a week of moderate-intensity aerobic physical activity or 75 minutes a week of vigorous-intensity aerobic physical activity and engage in muscle-strengthening activities on 2 or more days a week" = "Low Aerobic + Strength",
+                   "Percent of adults who engage in muscle-strengthening activities on 2 or more days a week" = "Strength Only",
+                   "Percent of adults who engage in no leisure-time physical activity" = "No Physical Activity",
+                   "Percent of adults who report consuming fruit less than one time daily" = "Fruit < 1x Daily",
+                   "Percent of adults who report consuming vegetables less than one time daily" = "Vegetables < 1x Daily",
+                   "Percent of adults who achieve at least 150 minutes a week of moderate-intensity aerobic physical activity or 75 minutes a week of vigorous-intensity aerobic activity (or an equivalent combination)" = "Low Aerobic",
+                   "Percent of adults who achieve at least 300 minutes a week of moderate-intensity aerobic physical activity or 150 minutes a week of vigorous-intensity aerobic activity (or an equivalent combination)" = "High Aerobic")
+
+fig6$Question <- str_replace_all(fig6$Question, new_questions)
+
+# Drop empty cells
+fig6 <- fig6 %>% 
+  drop_na()
+
+# Group by location and gender in order to produce the median data
+fig6 <- fig6 %>% 
+  group_by(YearStart, LocationDesc, Question) %>% 
+  summarise(median = median(Data_Value))
+
+# Plot the heatmap
+ggplot(fig6, aes(x=Question, y=LocationDesc, fill=median)) +
+  geom_tile() +
+  scale_fill_viridis(discrete = F, name = "Median %") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = "Question", y = "State/Territory", title = "Median % Response per Question for CDC Nutrition, Physical Activity and Obesity Study, 2011-2021", color = "Median %") +
+  theme(axis.text=element_text(size=5), plot.title=element_text(size=8), axis.title=element_text(size=8), legend.text = element_text(size = 8), legend.title = element_text(size = 8))
+
+
+```
+
+Page 7
+===========================
+
+
+### Chart G
+
+```{r}
+
+# Select the necessary columns
+fig7 <- dat %>% 
+  select(LocationDesc, Sample_Size, Stratification1, StratificationCategoryId1)
+
+# Filter out national data and filter only education data
+fig7 <- fig7 %>% 
+  filter(LocationDesc!="National" & StratificationCategoryId1 == "EDU")
+
+# Drop any empty cells
+fig7 <- fig7 %>% 
+  drop_na()
+
+# Group by location and education level in order to produce the median data
+fig7 <- fig7 %>% 
+  group_by(LocationDesc, Stratification1) %>% 
+  summarise(sum = sum(Sample_Size))
+
+ggplotly(ggplot(fig7, aes(x=Stratification1, y=LocationDesc, size=sum))+ 
+  geom_point(alpha=0.4, shape=20, color="red") + 
+  labs(x="Education Level", y="State/Territory", title = "Total Respondents per State Based on Education Level, 2011-2021"))
+
+```
+
+Page 8
+======
+
+Input{.sidebar}
+----------------------------------------------------------------
+### User Input
+
+```{r}
+# Select the necessary columns
+fig8 <- dat %>% 
+  select(LocationDesc, QuestionID, Data_Value, Stratification1, StratificationCategoryId1)
+
+# Filter out national data and filter only age data and 
+fig8 <- fig8 %>% 
+  filter(LocationDesc!="National" & StratificationCategoryId1 == "AGEYR" & QuestionID == "Q018")
+
+# Drop any empty cells
+fig8 <- fig8 %>% 
+  drop_na()
+
+# Group by location and education level in order to produce the median data
+fig8 <- fig8 %>% 
+  group_by(LocationDesc, Stratification1) %>% 
+  summarise(median = median(Data_Value))
+
+sliderTextInput(inputId="age_input", label="Age Group", choices=sort(unique(fig8$Stratification1)))
+
+```
+
+Column
+-------
+
+### Chart H
+
+```{r}
+
+renderPlot({
+    
+    fig8_age <- fig8[fig8$Stratification1 == input$age_input, ]
+    
+    ggplot(fig8_age, aes(x=LocationDesc, y=median)) +
+      geom_bar(stat = "identity", width = 0.5, color="blue", fill=rgb(0.1,0.4,0.5,0.7)) +
+      coord_flip() +
+      geom_rangeframe() +
+      theme_calc() +
+      labs(x="State/Territory", y="Median % of Responders", title="Median % Of Responders Who Eat Fruit Less than Once Per Day ")
+    
+  })
+
+```
